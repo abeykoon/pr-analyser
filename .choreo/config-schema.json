@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "hasithah": {
+      "type": "object",
+      "properties": {
+        "pr_analyser": {
+          "type": "object",
+          "properties": {
+            "repositoriesToScan": {
+              "type": "string",
+              "description": "if you have more than one, specify comma separated"
+            },
+            "dateRange": {
+              "type": "string",
+              "description": "Specify the date range in format YYYY-MM-DD:YYYY-MM-DD (start date: end date)"
+            },
+            "gitHubOAuthConfig": {
+              "type": "object",
+              "properties": {
+                "token": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "token"
+              ],
+              "name": "ballerina/http:2.3.0:BearerTokenConfig",
+              "description": ""
+            },
+            "gSheetConfig": {
+              "type": "object",
+              "properties": {
+                "clientId": {
+                  "type": "string"
+                },
+                "clientSecret": {
+                  "type": "string"
+                },
+                "refreshToken": {
+                  "type": "string"
+                },
+                "spreadSheetID": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "clientId",
+                "clientSecret",
+                "refreshToken",
+                "spreadSheetID"
+              ],
+              "name": "hasithah/pr_analyser:0.1.0:GSheetConfig",
+              "description": ""
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "repositoriesToScan",
+            "dateRange",
+            "gitHubOAuthConfig",
+            "gSheetConfig"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
