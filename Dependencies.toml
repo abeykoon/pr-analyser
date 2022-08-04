@@ -307,7 +307,7 @@ modules = [
 ]
 
 [[package]]
-org = "hasithah"
+org = "choreoem"
 name = "pr_analyser"
 version = "0.1.0"
 dependencies = [
@@ -319,7 +319,7 @@ dependencies = [
 	{org = "ballerinax", name = "googleapis.sheets"}
 ]
 modules = [
-	{org = "hasithah", packageName = "pr_analyser", moduleName = "pr_analyser"}
+	{org = "choreoem", packageName = "pr_analyser", moduleName = "pr_analyser"}
 ]
 
 

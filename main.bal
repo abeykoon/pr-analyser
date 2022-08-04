@@ -30,6 +30,16 @@ type GSheetConfig record {
     string spreadSheetID;
 };
 
+type WorkSheetContext record {
+    string spreadSheetId;
+    string worksheetName;
+    int lastRowNumberWithData = 0;
+    string startingColumnInDataRange = "A";
+    string endingColumnInDataRange;
+};
+
+
+
 github:Client githubClient = check new ({
     auth: {
         token: gitHubOAuthConfig.token
@@ -52,6 +62,7 @@ sheets:Client spreadsheetClient = check new ({
 });
 
 string[] GSheetHeaderColumns = ["Author", "State", "Url", "Title", "Base Branch", "Created Date", "Closed Date", "Dates to Close", "Review Comments Count", "Added line count", "Removed Line Count", "Labels", "Linked Issue"];
+const string endingColumnForGSheetData = "M";
 
 public function main() returns error? {
 
@@ -63,13 +74,19 @@ public function main() returns error? {
 
     foreach string repositoryName in repositories {
         string repoNameWithoutOrgPrefix = getRepoNameWithoutOrgName(repositoryName); //need to do this due to an issue in Gsheet connector
-        check createNewSheetIfRequired(gSheetConfig.spreadSheetID, repoNameWithoutOrgPrefix);
-        check getClosedPRs(githubClient, repositoryName, startDate, endDate);
-        check getOpenPRs(githubClient, repositoryName, startDate, endDate);
+        
+        WorkSheetContext workSheetContext = check createNewSheetIfRequired(gSheetConfig.spreadSheetID, repoNameWithoutOrgPrefix);
+        
+        github:PullRequest[] closedPullRequests = check getClosedPRs(githubClient, repositoryName, startDate, endDate);
+        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(closedPullRequests));
+       
+        github:PullRequest[] openPullRequests = check getOpenPRs(githubClient, repositoryName, startDate, endDate);
+        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(openPullRequests));
     }
 }
 
-function extractPRInfo(github:Client githubClient, string repositoryName, string githubQuery) returns error? {
+function extractPRInfo(github:Client githubClient, string repositoryName, string githubQuery) returns github:PullRequest[]|error {
+    github:PullRequest[] PRList = [];
     string? nextPageCurser = ();
     boolean hasNextPage = true;
     while hasNextPage {
@@ -77,45 +94,52 @@ function extractPRInfo(github:Client githubClient, string repositoryName, string
         github:Issue[]|github:User[]|github:Organization[]|github:Repository[]|github:PullRequest[] results = searchResult.results;
         if results is github:PullRequest[] {
             foreach github:PullRequest pullRequest in results {
-                string createdAt = pullRequest.createdAt ?: ""; //example - 2022-03-05T02:28:34Z
-                string closedAt = pullRequest?.closedAt ?: "";
-                string createdDate = regex:split(createdAt, "T")[0];
-                string closedDate = regex:split(closedAt, "T")[0];
-                int numOfDatesBetweenCreateAndClose = 0;
-                //TODO: make separate method
-                if (closedAt != "") {
-                    time:Utc createdAtUtc = check time:utcFromString(createdAt);
-                    time:Utc closedAtUtc = check time:utcFromString(closedAt);
-                    numOfDatesBetweenCreateAndClose = <int>((time:utcDiffSeconds(createdAtUtc, closedAtUtc)).abs() / (60 * 60 * 24));
-                } else {
-                    time:Utc createdAtUtc = check time:utcFromString(createdAt);
-                    numOfDatesBetweenCreateAndClose = <int>((time:utcDiffSeconds(createdAtUtc, time:utcNow())).abs() / (60 * 60 * 24)); //number of days since created
-                }
-                
-                (string|int)[] PRInfo = [
-                    pullRequest?.author is github:Actor ? (<github:Actor>pullRequest?.author).login : "Unknown User",
-                    pullRequest.state ?: "",
-                    pullRequest.url ?: "",
-                    pullRequest.title ?: "",
-                    pullRequest.baseRefName ?: "",
-                    createdDate,
-                    closedDate,
-                    numOfDatesBetweenCreateAndClose,
-                    pullRequest.pullRequestReviews is github:PullRequestReview[] ? (<github:PullRequestReview[]>pullRequest.pullRequestReviews).length() : 0, //check
-                    pullRequest.additions ?: 0,
-                    pullRequest.deletions ?: 0,
-                    getCommaSeparatedLabelNames(pullRequest),
-                    getCommaSeparatedReferencedIssues(pullRequest)
-
-                ];
-                string repoNameWithoutOrgPrefix = getRepoNameWithoutOrgName(repositoryName);
-                check appendToGSheet(gSheetConfig.spreadSheetID, repoNameWithoutOrgPrefix, PRInfo);
+                PRList.push(pullRequest);
             }
         }
         hasNextPage = searchResult.pageInfo.hasNextPage;
         nextPageCurser = searchResult.pageInfo.endCursor;
     }
+    return PRList;
+}
 
+function populatePRInfoToGSheetData(github:PullRequest[] pullRequests) returns (string|int)[][]|error {
+    (string|int)[][] gSheetData = [];
+    foreach github:PullRequest pullRequest in pullRequests {
+        string createdAt = pullRequest.createdAt ?: ""; //example - 2022-03-05T02:28:34Z
+        string closedAt = pullRequest?.closedAt ?: "";
+        string createdDate = regex:split(createdAt, "T")[0];
+        string closedDate = regex:split(closedAt, "T")[0];
+        int numOfDatesBetweenCreateAndClose = 0;
+        //TODO: make separate method
+        if (closedAt != "") {
+            time:Utc createdAtUtc = check time:utcFromString(createdAt);
+            time:Utc closedAtUtc = check time:utcFromString(closedAt);
+            numOfDatesBetweenCreateAndClose = <int>((time:utcDiffSeconds(createdAtUtc, closedAtUtc)).abs() / (60 * 60 * 24));
+        } else {
+            time:Utc createdAtUtc = check time:utcFromString(createdAt);
+            numOfDatesBetweenCreateAndClose = <int>((time:utcDiffSeconds(createdAtUtc, time:utcNow())).abs() / (60 * 60 * 24)); //number of days since created
+        }
+
+        (string|int)[] PRInfo = [
+            pullRequest?.author is github:Actor ? (<github:Actor>pullRequest?.author).login : "Unknown User",
+            pullRequest.state ?: "",
+            pullRequest.url ?: "",
+            pullRequest.title ?: "",
+            pullRequest.baseRefName ?: "",
+            createdDate,
+            closedDate,
+            numOfDatesBetweenCreateAndClose,
+            pullRequest.pullRequestReviews is github:PullRequestReview[] ? (<github:PullRequestReview[]>pullRequest.pullRequestReviews).length() : 0, //check
+            pullRequest.additions ?: 0,
+            pullRequest.deletions ?: 0,
+            getCommaSeparatedLabelNames(pullRequest),
+            getCommaSeparatedReferencedIssues(pullRequest)
+
+        ];
+        gSheetData.push(PRInfo);
+    }
+    return gSheetData;
 }
 
 function constructGithubQuery(string repositoryName, boolean isClosed, string startDate, string endDate) returns string {
@@ -127,9 +151,35 @@ function constructGithubQuery(string repositoryName, boolean isClosed, string st
     return queryRepo + " " + queryElementType + " " + queryElementState + " " + queryDateRange;
 }
 
-function appendToGSheet(string spreadsheetID, string sheetName, (string|int)[] gSheetData) returns error? {
-    _ = check spreadsheetClient->appendRowToSheet(spreadsheetID, sheetName, gSheetData);
+function appendToGSheet(WorkSheetContext workSheetContext, (string|int)[][] gSheetData) returns error? {
+    string a1Notation = populateA1Notation(workSheetContext, gSheetData);
+    sheets:Range data = {
+        a1Notation: a1Notation,
+        values: gSheetData
+    };
+    _ = check spreadsheetClient-> setRange(workSheetContext.spreadSheetId, workSheetContext.worksheetName, data);
+    updateWorkSheetContext(workSheetContext, gSheetData);
+}
 
+function appendSingleRowToGSheet(WorkSheetContext workSheetContext, (string|int)[] data) returns error? {
+    _ = check spreadsheetClient -> appendRowToSheet(workSheetContext.spreadSheetId, workSheetContext.worksheetName, data);
+    workSheetContext.lastRowNumberWithData = workSheetContext.lastRowNumberWithData + 1;
+}
+
+function populateA1Notation(WorkSheetContext workSheetContext, (string|int)[][] gSheetData) returns string {
+    int currentLastRowNumberWithData = workSheetContext.lastRowNumberWithData;
+    int newStartRowNumberWithData = workSheetContext.lastRowNumberWithData + 1;
+    int newLastRowNumberWithData = currentLastRowNumberWithData + gSheetData.length();
+    string a1NotationForData = workSheetContext.startingColumnInDataRange.toString()        //Example A1Notation - A1:B3
+        + newStartRowNumberWithData.toString()
+        + ":"
+        + workSheetContext.endingColumnInDataRange
+        + newLastRowNumberWithData.toString();
+    return a1NotationForData;
+}
+
+function updateWorkSheetContext(WorkSheetContext workSheetContext, (string|int)[][] gSheetData) {
+    workSheetContext.lastRowNumberWithData = workSheetContext.lastRowNumberWithData + gSheetData.length();
 }
 
 function getRepoNameWithoutOrgName(string repositoryName) returns string {
@@ -138,12 +188,20 @@ function getRepoNameWithoutOrgName(string repositoryName) returns string {
     return repositoryNameWithoutOrgName;
 }
 
-function createNewSheetIfRequired(string spreadsheetID, string sheetName) returns error? {
+function createNewSheetIfRequired(string spreadsheetID, string sheetName) returns WorkSheetContext|error {
     sheets:Sheet|error sheet = spreadsheetClient->getSheetByName(spreadsheetID, sheetName);
+    WorkSheetContext context = {
+                 spreadSheetId: spreadsheetID,
+                 worksheetName: sheetName,
+                 endingColumnInDataRange: endingColumnForGSheetData
+        };
     if (sheet !is sheets:Sheet) {
         _ = check spreadsheetClient->addSheet(spreadsheetID, sheetName);
-        check appendToGSheet(spreadsheetID, sheetName, GSheetHeaderColumns);
+        check appendSingleRowToGSheet(context, GSheetHeaderColumns);
+    } else {
+        //TODO: sheet exists. Clear up all data? 
     }
+    return context;
 }
 
 function getCommaSeparatedLabelNames(github:PullRequest pullRequest) returns string {
@@ -183,13 +241,12 @@ function getCommaSeparatedReferencedIssues(github:PullRequest pullRequest) retur
     return referencedIssues;
 }
 
-
-function getClosedPRs(github:Client githubClient, string repositoryName, string startDate, string endDate) returns error? {
+function getClosedPRs(github:Client githubClient, string repositoryName, string startDate, string endDate) returns github:PullRequest[]|error {
     string query = constructGithubQuery(repositoryName, true, startDate, endDate);
-    _ = check extractPRInfo(githubClient, repositoryName, query);
+    return extractPRInfo(githubClient, repositoryName, query);
 }
 
-function getOpenPRs(github:Client githubClient, string repositoryName, string startDate, string endDate) returns error? {
+function getOpenPRs(github:Client githubClient, string repositoryName, string startDate, string endDate) returns github:PullRequest[]|error {
     string query = constructGithubQuery(repositoryName, false, startDate, endDate);
-    _ = check extractPRInfo(githubClient, repositoryName, query);
+    return extractPRInfo(githubClient, repositoryName, query);
 }
