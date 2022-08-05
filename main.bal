@@ -3,6 +3,7 @@ import ballerinax/github;
 import ballerina/http;
 import ballerina/regex;
 import ballerina/time;
+import ballerina/log;
 
 //import ballerina/url;
 //import ballerina/log;
@@ -10,15 +11,15 @@ import ballerina/time;
 
 @display {
     label: "RepositoriesToScan",
-    description: "if you have more than one, specify comma separated"
+    description: "if you have more than one, specify comma separated."
 }
 configurable string repositoriesToScan = ?;
 
 @display {
     label: "DateRange",
-    description: "Specify the date range in format YYYY-MM-DD:YYYY-MM-DD (start date: end date)"
+    description: "Specify the date range in format YYYY-MM-DD:YYYY-MM-DD (start date: end date). If not provided date range will be constructed for the previous month."
 }
-configurable string dateRange = ?;
+configurable string dateRange = "";
 
 configurable http:BearerTokenConfig gitHubOAuthConfig = ?;
 configurable GSheetConfig gSheetConfig = ?;
@@ -61,27 +62,36 @@ sheets:Client spreadsheetClient = check new ({
     }
 });
 
-string[] GSheetHeaderColumns = ["Author", "State", "Url", "Title", "Base Branch", "Created Date", "Closed Date", "Dates to Close", "Review Comments Count", "Added line count", "Removed Line Count", "Labels", "Linked Issue"];
-const string endingColumnForGSheetData = "M";
+string[] GSheetHeaderColumns = ["Repository", "Author", "State", "Url", "Title", "Base Branch", "Created Date", "Closed Date", 
+                                "Dates to Close", "Review Comments Count", "Added line count", 
+                                "Removed Line Count", "Labels", "Linked Issue"];
+final string[] & readonly monthsOfYear = ["Jan", "Feb,", "Mar", "April", "May", "June", "July", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const string endingColumnForGSheetData = "N";
 
 public function main() returns error? {
 
     //read inputs
     string[] repositories = regex:split(repositoriesToScan, ",");
-    string[] datesUsedToQuery = regex:split(dateRange, ":");
+    string dateRangeToQuery = dateRange;
+    if(dateRangeToQuery == "") {
+        dateRangeToQuery = getDateRangeForPreviousMonth();
+        log:printInfo(string `Date range is not provided. Program will construct date range for previous month = ${dateRangeToQuery}`);
+    }
+    string[] datesUsedToQuery = regex:split(dateRangeToQuery, ":");
     string startDate = datesUsedToQuery[0];
     string endDate = datesUsedToQuery[1];
 
     foreach string repositoryName in repositories {
         string repoNameWithoutOrgPrefix = getRepoNameWithoutOrgName(repositoryName); //need to do this due to an issue in Gsheet connector
-        
-        WorkSheetContext workSheetContext = check createNewSheetIfRequired(gSheetConfig.spreadSheetID, repoNameWithoutOrgPrefix);
+        string sheetNameForMonth = check constructSheetName(startDate);
+        WorkSheetContext workSheetContext = check createNewSheetIfRequired(gSheetConfig.spreadSheetID, sheetNameForMonth);
         
         github:PullRequest[] closedPullRequests = check getClosedPRs(githubClient, repositoryName, startDate, endDate);
-        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(closedPullRequests));
+        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(closedPullRequests, repoNameWithoutOrgPrefix));
        
         github:PullRequest[] openPullRequests = check getOpenPRs(githubClient, repositoryName, startDate, endDate);
-        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(openPullRequests));
+        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(openPullRequests, repoNameWithoutOrgPrefix));
     }
 }
 
@@ -103,7 +113,7 @@ function extractPRInfo(github:Client githubClient, string repositoryName, string
     return PRList;
 }
 
-function populatePRInfoToGSheetData(github:PullRequest[] pullRequests) returns (string|int)[][]|error {
+function populatePRInfoToGSheetData(github:PullRequest[] pullRequests, string repositoryName) returns (string|int)[][]|error {
     (string|int)[][] gSheetData = [];
     foreach github:PullRequest pullRequest in pullRequests {
         string createdAt = pullRequest.createdAt ?: ""; //example - 2022-03-05T02:28:34Z
@@ -122,6 +132,7 @@ function populatePRInfoToGSheetData(github:PullRequest[] pullRequests) returns (
         }
 
         (string|int)[] PRInfo = [
+            repositoryName,
             pullRequest?.author is github:Actor ? (<github:Actor>pullRequest?.author).login : "Unknown User",
             pullRequest.state ?: "",
             pullRequest.url ?: "",
@@ -249,4 +260,48 @@ function getClosedPRs(github:Client githubClient, string repositoryName, string 
 function getOpenPRs(github:Client githubClient, string repositoryName, string startDate, string endDate) returns github:PullRequest[]|error {
     string query = constructGithubQuery(repositoryName, false, startDate, endDate);
     return extractPRInfo(githubClient, repositoryName, query);
+}
+
+function getDateRangeForPreviousMonth() returns string {
+    time:Civil timeNow = time:utcToCivil(time:utcNow());
+    int yearToQuery = timeNow.year;
+    int monthToQuery = timeNow.month - 1;   //previous month
+    if(monthToQuery == 0) {     //adjust for year end
+        monthToQuery = 12;
+        yearToQuery = yearToQuery - 1;
+    }
+    int endingDateForMonth = getNumberOfDaysForMonth(yearToQuery, monthToQuery);
+    return constructDateRange(yearToQuery, monthToQuery, endingDateForMonth);
+}
+
+function constructDateRange(int yearToQuery, int monthToQuery, int endingDateForMonth) returns string {
+    //Specify the date range in format YYYY-MM-DD:YYYY-MM-DD (start date: end date)
+    string sanitizedMonthNum;
+    if monthToQuery < 10 {
+        sanitizedMonthNum = string `0${monthToQuery}`;
+    } else {
+        sanitizedMonthNum = monthToQuery.toString();
+    }
+    return string `${yearToQuery}-${sanitizedMonthNum}-01:${yearToQuery}-${sanitizedMonthNum}-${endingDateForMonth}`;
+}
+
+function getNumberOfDaysForMonth(int year, int month) returns int {
+    if(month == 1 || month == 3 || month == 5 || month == 7 || month == 8 || month == 10 || month == 12) {
+        return 31;
+    } else if((month == 2) && ((year%400==0) || (year%4==0 && year%100!=0))) {
+        return 29;
+    } else if(month == 2) {
+        return 28;
+    } else {
+        return 30;
+    }
+}
+
+function constructSheetName(string startDate) returns string|error {
+    //format YYYY-MM-DD
+    string year = regex:split(startDate, "-")[0];
+    string month = regex:split(startDate, "-")[1];
+    int monthAsNumber = check int:fromString(month);
+    string monthAsString =  monthsOfYear[monthAsNumber - 1];
+    return string `${monthAsString} ${year}`;
 }
