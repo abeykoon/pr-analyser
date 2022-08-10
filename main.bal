@@ -5,10 +5,6 @@ import ballerina/regex;
 import ballerina/time;
 import ballerina/log;
 
-//import ballerina/url;
-//import ballerina/log;
-//import ballerina/io;
-
 @display {
     label: "RepositoriesToScan",
     description: "if you have more than one, specify comma separated."
@@ -63,11 +59,11 @@ sheets:Client spreadsheetClient = check new ({
 });
 
 string[] GSheetHeaderColumns = ["Repository", "Author", "State", "Url", "Title", "Base Branch", "Created Date", "Closed Date", 
-                                "Dates to Close", "Review Comments Count", "Added line count", 
+                                "Dates to Close", "Review Comments Count", "Approved By", "Added line count", 
                                 "Removed Line Count", "Labels", "Linked Issue"];
 final string[] & readonly monthsOfYear = ["Jan", "Feb,", "Mar", "April", "May", "June", "July", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-const string endingColumnForGSheetData = "N";
+const string endingColumnForGSheetData = "O";
 
 public function main() returns error? {
 
@@ -142,6 +138,7 @@ function populatePRInfoToGSheetData(github:PullRequest[] pullRequests, string re
             closedDate,
             numOfDatesBetweenCreateAndClose,
             pullRequest.pullRequestReviews is github:PullRequestReview[] ? (<github:PullRequestReview[]>pullRequest.pullRequestReviews).length() : 0, //check
+            check getMembersApprovedPR(pullRequest),
             pullRequest.additions ?: 0,
             pullRequest.deletions ?: 0,
             getCommaSeparatedLabelNames(pullRequest),
@@ -304,4 +301,21 @@ function constructSheetName(string startDate) returns string|error {
     int monthAsNumber = check int:fromString(month);
     string monthAsString =  monthsOfYear[monthAsNumber - 1];
     return string `${monthAsString} ${year}`;
+}
+
+function getMembersApprovedPR(github:PullRequest pullRequest) returns string|error {
+    string membersApprovedPR = "";
+    github:PullRequestReview[]? PRReviews = pullRequest.pullRequestReviews;
+    if PRReviews is github:PullRequestReview[] {
+        foreach github:PullRequestReview review in  PRReviews {
+            if review.state == github:PR_REVIEW_APPROVED {
+               // membersApprovedPR = membersApprovedPR + review.author + ", ";   //TODO: fix in connector
+            }
+        }
+    }
+    int? indexOfLastComma = string:lastIndexOf(str = membersApprovedPR, substr = ",");
+    if(indexOfLastComma is int) {
+        membersApprovedPR = membersApprovedPR.substring(0,indexOfLastComma);
+    }
+    return membersApprovedPR;
 }
