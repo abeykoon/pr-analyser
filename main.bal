@@ -7,9 +7,9 @@ import ballerina/log;
 
 @display {
     label: "RepositoriesToScan",
-    description: "if you have more than one, specify comma separated."
+    description: "If you have more than one, specify comma separated. If not specified, it will look for information at Repositories tab of specified GSheet."
 }
-configurable string repositoriesToScan = ?;
+configurable string repositoriesToScan = "";
 
 @display {
     label: "DateRange",
@@ -58,17 +58,29 @@ sheets:Client spreadsheetClient = check new ({
     }
 });
 
-string[] GSheetHeaderColumns = ["Repository", "Author", "State", "Url", "Title", "Base Branch", "Created Date", "Closed Date", 
+final string[] & readonly GSheetHeaderColumns = ["Repository", "Author", "State", "Url", "Title", "Base Branch", "Created Date", "Closed Date", 
                                 "Dates to Close", "Review Comments Count", "Approved By", "Added line count", 
                                 "Removed Line Count", "Labels", "Linked Issue"];
 final string[] & readonly monthsOfYear = ["Jan", "Feb,", "Mar", "April", "May", "June", "July", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const string endingColumnForGSheetData = "O";
 
+const string sheetNameOfRepositories = "Repositories";
+const string columnContainingRepositories = "A";
+const string sheetNameOfTeamMembers = "Members";
+const string rangeForTeamMemberInfo = "A2:B200";
+
+
 public function main() returns error? {
 
     //read inputs
-    string[] repositories = regex:split(repositoriesToScan, ",");
+    string[] repositories;
+    if repositoriesToScan != "" {
+        repositories = regex:split(repositoriesToScan, ",");
+    } else {
+        log:printInfo(string `RepositoriesToScan is not provided. Program will look for this infomation in ${sheetNameOfRepositories} tab of the specified worksheet.`);
+        repositories = check getRepositoryList(gSheetConfig.spreadSheetID, sheetNameOfRepositories, columnContainingRepositories);
+    }
     string dateRangeToQuery = dateRange;
     if(dateRangeToQuery == "") {
         dateRangeToQuery = getDateRangeForPreviousMonth();
@@ -78,16 +90,19 @@ public function main() returns error? {
     string startDate = datesUsedToQuery[0];
     string endDate = datesUsedToQuery[1];
 
+    map<string> teamMembers = check populateMemberInfo(gSheetConfig.spreadSheetID, sheetNameOfTeamMembers, rangeForTeamMemberInfo);
+
+    string sheetNameForMonth = check constructSheetName(startDate);
+    WorkSheetContext workSheetContext = check createNewSheetIfRequired(gSheetConfig.spreadSheetID, sheetNameForMonth);
+
     foreach string repositoryName in repositories {
         string repoNameWithoutOrgPrefix = getRepoNameWithoutOrgName(repositoryName); //need to do this due to an issue in Gsheet connector
-        string sheetNameForMonth = check constructSheetName(startDate);
-        WorkSheetContext workSheetContext = check createNewSheetIfRequired(gSheetConfig.spreadSheetID, sheetNameForMonth);
         
         github:PullRequest[] closedPullRequests = check getClosedPRs(githubClient, repositoryName, startDate, endDate);
-        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(closedPullRequests, repoNameWithoutOrgPrefix));
+        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(closedPullRequests, repoNameWithoutOrgPrefix, teamMembers));
        
         github:PullRequest[] openPullRequests = check getOpenPRs(githubClient, repositoryName, startDate, endDate);
-        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(openPullRequests, repoNameWithoutOrgPrefix));
+        _ = check appendToGSheet(workSheetContext, check populatePRInfoToGSheetData(openPullRequests, repoNameWithoutOrgPrefix, teamMembers));
     }
 }
 
@@ -109,9 +124,13 @@ function extractPRInfo(github:Client githubClient, string repositoryName, string
     return PRList;
 }
 
-function populatePRInfoToGSheetData(github:PullRequest[] pullRequests, string repositoryName) returns (string|int)[][]|error {
+function populatePRInfoToGSheetData(github:PullRequest[] pullRequests, string repositoryName, map<string> teamMembers) returns (string|int)[][]|error {
     (string|int)[][] gSheetData = [];
     foreach github:PullRequest pullRequest in pullRequests {
+        boolean isPRSentByMember = checkIfPRIsFromTeam(pullRequest, teamMembers);
+        if !isPRSentByMember {      //ignore PRs sent by non-members
+            continue;
+        }
         string createdAt = pullRequest.createdAt ?: ""; //example - 2022-03-05T02:28:34Z
         string closedAt = pullRequest?.closedAt ?: "";
         string createdDate = regex:split(createdAt, "T")[0];
@@ -160,13 +179,15 @@ function constructGithubQuery(string repositoryName, boolean isClosed, string st
 }
 
 function appendToGSheet(WorkSheetContext workSheetContext, (string|int)[][] gSheetData) returns error? {
-    string a1Notation = populateA1Notation(workSheetContext, gSheetData);
-    sheets:Range data = {
-        a1Notation: a1Notation,
-        values: gSheetData
-    };
-    _ = check spreadsheetClient-> setRange(workSheetContext.spreadSheetId, workSheetContext.worksheetName, data);
-    updateWorkSheetContext(workSheetContext, gSheetData);
+    if gSheetData.length() != 0 {
+        string a1Notation = populateA1Notation(workSheetContext, gSheetData);
+        sheets:Range data = {
+            a1Notation: a1Notation,
+            values: gSheetData
+        };
+        _ = check spreadsheetClient->setRange(workSheetContext.spreadSheetId, workSheetContext.worksheetName, data);
+        updateWorkSheetContext(workSheetContext, gSheetData);
+    }
 }
 
 function appendSingleRowToGSheet(WorkSheetContext workSheetContext, (string|int)[] data) returns error? {
@@ -318,4 +339,33 @@ function getMembersApprovedPR(github:PullRequest pullRequest) returns string|err
         membersApprovedPR = membersApprovedPR.substring(0,indexOfLastComma);
     }
     return membersApprovedPR;
+}
+
+//first tab in the worksheet will contain the repository list
+function getRepositoryList(string worksheetId, string sheetName, string column) returns string[]|error {   
+    sheets:Column columnInfo = check spreadsheetClient->getColumn(worksheetId, sheetName, column);  
+    return from (string|int|decimal) repoData in columnInfo.values 
+                where repoData is string 
+                select repoData;
+}
+
+function populateMemberInfo(string worksheetId, string sheetName, string range) returns map<string>|error {
+    sheets:Range gSheetResult = check spreadsheetClient->getRange(worksheetId, sheetName, range);
+    (int|string|decimal)[][] values = gSheetResult.values;
+    map<string> teamMebers = {}; 
+    foreach ((int|string|decimal)[]) entry in values {
+        string githubUsername = check entry[0].ensureType();
+        string email = check entry[1].ensureType();
+        teamMebers[githubUsername] = email;
+    }
+    return teamMebers;
+}
+
+function checkIfPRIsFromTeam(github:PullRequest pullRequest, map<string> teamMembers) returns boolean {
+    string PRSentBy = pullRequest?.author is github:Actor ? (<github:Actor>pullRequest?.author).login : "Unknown User";
+    if PRSentBy == "Unknown User" {
+        return false;
+    } else {
+        return teamMembers.hasKey(PRSentBy);
+    }
 }
