@@ -58,12 +58,12 @@ sheets:Client spreadsheetClient = check new ({
     }
 });
 
-final string[] & readonly GSheetHeaderColumns = ["Repository", "Author", "State", "Url", "Title", "Base Branch", "Created Date", "Closed Date", 
+final string[] & readonly GSheetHeaderColumns = ["Repository", "Author", "Author Email", "State", "Url", "Title", "Base Branch", "Created Date", "Closed Date", 
                                 "Dates to Close", "Review Comments Count", "Approved By", "Added line count", 
                                 "Removed Line Count", "Labels", "Linked Issue"];
 final string[] & readonly monthsOfYear = ["Jan", "Feb,", "Mar", "April", "May", "June", "July", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-const string endingColumnForGSheetData = "O";
+const string endingColumnForGSheetData = "P";
 
 const string sheetNameOfRepositories = "Repositories";
 const string columnContainingRepositories = "A";
@@ -135,20 +135,16 @@ function populatePRInfoToGSheetData(github:PullRequest[] pullRequests, string re
         string closedAt = pullRequest?.closedAt ?: "";
         string createdDate = regex:split(createdAt, "T")[0];
         string closedDate = regex:split(closedAt, "T")[0];
-        int numOfDatesBetweenCreateAndClose = 0;
-        //TODO: make separate method
-        if (closedAt != "") {
-            time:Utc createdAtUtc = check time:utcFromString(createdAt);
-            time:Utc closedAtUtc = check time:utcFromString(closedAt);
-            numOfDatesBetweenCreateAndClose = <int>((time:utcDiffSeconds(createdAtUtc, closedAtUtc)).abs() / (60 * 60 * 24));
-        } else {
-            time:Utc createdAtUtc = check time:utcFromString(createdAt);
-            numOfDatesBetweenCreateAndClose = <int>((time:utcDiffSeconds(createdAtUtc, time:utcNow())).abs() / (60 * 60 * 24)); //number of days since created
-        }
+        int numOfDatesBetweenCreateAndClose = check getDatesBetween(createdAt, closedAt);
+
+        string PRAuthorGitHubId;
+        string PRAuthorEmail ;
+        [PRAuthorGitHubId, PRAuthorEmail] = getPRAuthor(pullRequest, teamMembers);
 
         (string|int)[] PRInfo = [
             repositoryName,
-            pullRequest?.author is github:Actor ? (<github:Actor>pullRequest?.author).login : "Unknown User",
+            PRAuthorGitHubId,
+            PRAuthorEmail,
             pullRequest.state ?: "",
             pullRequest.url ?: "",
             pullRequest.title ?: "",
@@ -157,15 +153,16 @@ function populatePRInfoToGSheetData(github:PullRequest[] pullRequests, string re
             closedDate,
             numOfDatesBetweenCreateAndClose,
             pullRequest.pullRequestReviews is github:PullRequestReview[] ? (<github:PullRequestReview[]>pullRequest.pullRequestReviews).length() : 0, //check
-            check getMembersApprovedPR(pullRequest),
+            check getMembersApprovedPR(pullRequest, teamMembers),
             pullRequest.additions ?: 0,
             pullRequest.deletions ?: 0,
             getCommaSeparatedLabelNames(pullRequest),
             getCommaSeparatedReferencedIssues(pullRequest)
-
         ];
+
         gSheetData.push(PRInfo);
     }
+    
     return gSheetData;
 }
 
@@ -324,13 +321,22 @@ function constructSheetName(string startDate) returns string|error {
     return string `${monthAsString} ${year}`;
 }
 
-function getMembersApprovedPR(github:PullRequest pullRequest) returns string|error {
+function getMembersApprovedPR(github:PullRequest pullRequest, map<string> teamMembers) returns string|error {
     string membersApprovedPR = "";
     github:PullRequestReview[]? PRReviews = pullRequest.pullRequestReviews;
     if PRReviews is github:PullRequestReview[] {
         foreach github:PullRequestReview review in  PRReviews {
             if review.state == github:PR_REVIEW_APPROVED {
-               // membersApprovedPR = membersApprovedPR + review.author + ", ";   //TODO: fix in connector
+                github:Actor? PRApprovedBy = review?.author;
+                if PRApprovedBy is github:Actor {
+                    string githubNameOfMember = PRApprovedBy.login;
+                    string? emailOfMember = teamMembers[githubNameOfMember];
+                    if emailOfMember is string {
+                        membersApprovedPR = PRApprovedBy.login + "(" + emailOfMember + ")" + ", ";
+                    } else {
+                        membersApprovedPR = PRApprovedBy.login + ", ";
+                    }        
+                } 
             }
         }
     }
@@ -359,6 +365,33 @@ function populateMemberInfo(string worksheetId, string sheetName, string range) 
         teamMebers[githubUsername] = email;
     }
     return teamMebers;
+}
+
+function getPRAuthor(github:PullRequest pullRequest, map<string> teamMembers) returns [string, string] {
+    github:Actor? PRAuthorAtGithub = pullRequest?.author;
+    string PRAuthorGitHubId = "Unknown User";
+    string PRAuthorEmail = "Unknown Email";
+    if PRAuthorAtGithub is github:Actor {
+        PRAuthorGitHubId = PRAuthorAtGithub.login;
+        string? PRAuthorEmailFound = teamMembers[PRAuthorGitHubId];
+        if PRAuthorEmailFound is string {
+            PRAuthorEmail = PRAuthorEmailFound;
+        }
+    }
+    return [PRAuthorGitHubId, PRAuthorEmail];
+}
+
+function getDatesBetween(string createdAt, string closedAt) returns int|error {
+    int numOfDatesBetweenCreateAndClose = 0;
+    if (closedAt != "") {
+        time:Utc createdAtUtc = check time:utcFromString(createdAt);
+        time:Utc closedAtUtc = check time:utcFromString(closedAt);
+        numOfDatesBetweenCreateAndClose = <int>((time:utcDiffSeconds(createdAtUtc, closedAtUtc)).abs() / (60 * 60 * 24));
+    } else {
+        time:Utc createdAtUtc = check time:utcFromString(createdAt);
+        numOfDatesBetweenCreateAndClose = <int>((time:utcDiffSeconds(createdAtUtc, time:utcNow())).abs() / (60 * 60 * 24)); //number of days since created
+    }
+    return numOfDatesBetweenCreateAndClose;
 }
 
 function checkIfPRIsFromTeam(github:PullRequest pullRequest, map<string> teamMembers) returns boolean {
