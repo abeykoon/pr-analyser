@@ -82,7 +82,9 @@ public function main() returns error? {
         repositories = check getRepositoryList(gSheetConfig.spreadSheetID, sheetNameOfRepositories, columnContainingRepositories);
     }
     string dateRangeToQuery = dateRange;
+    boolean dateRangeProvidedByUser = true;
     if(dateRangeToQuery == "") {
+        dateRangeProvidedByUser = false;
         dateRangeToQuery = getDateRangeForPreviousMonth();
         log:printInfo(string `Date range is not provided. Program will construct date range for previous month = ${dateRangeToQuery}`);
     }
@@ -91,11 +93,18 @@ public function main() returns error? {
     string endDate = datesUsedToQuery[1];
 
     map<string> teamMembers = check populateMemberInfo(gSheetConfig.spreadSheetID, sheetNameOfTeamMembers, rangeForTeamMemberInfo);
-
-    string sheetNameForMonth = check constructSheetName(startDate);
-    WorkSheetContext workSheetContext = check createNewSheetIfRequired(gSheetConfig.spreadSheetID, sheetNameForMonth);
+    string sheetName;
+    if dateRangeProvidedByUser {
+        sheetName = startDate + " " + endDate;
+    } else {
+        string sheetNameForMonth = check constructSheetName(startDate);    //construct sheet name for previous month
+        sheetName = sheetNameForMonth;
+    }
+    WorkSheetContext workSheetContext = check createNewSheetIfRequired(gSheetConfig.spreadSheetID, sheetName);
 
     foreach string repositoryName in repositories {
+        log:printInfo("Scanning repository" + repositoryName);
+        
         string repoNameWithoutOrgPrefix = getRepoNameWithoutOrgName(repositoryName); //need to do this due to an issue in Gsheet connector
         
         github:PullRequest[] closedPullRequests = check getClosedPRs(githubClient, repositoryName, startDate, endDate);
