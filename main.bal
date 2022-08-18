@@ -120,7 +120,8 @@ function extractPRInfo(github:Client githubClient, string repositoryName, string
     string? nextPageCurser = ();
     boolean hasNextPage = true;
     while hasNextPage {
-        github:SearchResult searchResult = check githubClient->search(githubQuery, github:SEARCH_TYPE_PULL_REQUEST, 20, lastPageCursor = nextPageCurser);
+        github:SearchResult searchResult = check githubClient->search(githubQuery, github:SEARCH_TYPE_PULL_REQUEST,
+             20, perPageCountForPRReviews = 30,lastPageCursor = nextPageCurser);
         github:Issue[]|github:User[]|github:Organization[]|github:Repository[]|github:PullRequest[] results = searchResult.results;
         if results is github:PullRequest[] {
             foreach github:PullRequest pullRequest in results {
@@ -150,6 +151,10 @@ function populatePRInfoToGSheetData(github:PullRequest[] pullRequests, string re
         string PRAuthorEmail ;
         [PRAuthorGitHubId, PRAuthorEmail] = getPRAuthor(pullRequest, teamMembers);
 
+        string PRApprovedBy;
+        int PRReviewCount;
+        [PRApprovedBy, PRReviewCount] = check getPRApprovalAndReviewInfo(pullRequest, teamMembers);
+
         (string|int)[] PRInfo = [
             repositoryName,
             PRAuthorGitHubId,
@@ -161,8 +166,8 @@ function populatePRInfoToGSheetData(github:PullRequest[] pullRequests, string re
             createdDate,
             closedDate,
             numOfDatesBetweenCreateAndClose,
-            pullRequest.pullRequestReviews is github:PullRequestReview[] ? (<github:PullRequestReview[]>pullRequest.pullRequestReviews).length() : 0, //check
-            check getMembersApprovedPR(pullRequest, teamMembers),
+            PRReviewCount,
+            PRApprovedBy,
             pullRequest.additions ?: 0,
             pullRequest.deletions ?: 0,
             getCommaSeparatedLabelNames(pullRequest),
@@ -330,8 +335,10 @@ function constructSheetName(string startDate) returns string|error {
     return string `${monthAsString} ${year}`;
 }
 
-function getMembersApprovedPR(github:PullRequest pullRequest, map<string> teamMembers) returns string|error {
+//returns approvers as a string and review count
+function getPRApprovalAndReviewInfo(github:PullRequest pullRequest, map<string> teamMembers) returns [string,int]|error {
     string membersApprovedPR = "";
+    int PRReviewCount = 0;
     github:PullRequestReview[]? PRReviews = pullRequest.pullRequestReviews;
     if PRReviews is github:PullRequestReview[] {
         foreach github:PullRequestReview review in  PRReviews {
@@ -341,11 +348,14 @@ function getMembersApprovedPR(github:PullRequest pullRequest, map<string> teamMe
                     string githubNameOfMember = PRApprovedBy.login;
                     string? emailOfMember = teamMembers[githubNameOfMember];
                     if emailOfMember is string {
-                        membersApprovedPR = PRApprovedBy.login + "(" + emailOfMember + ")" + ", ";
+                        membersApprovedPR = membersApprovedPR + PRApprovedBy.login + "(" + emailOfMember + ")" + ", ";
                     } else {
-                        membersApprovedPR = PRApprovedBy.login + ", ";
+                        membersApprovedPR = membersApprovedPR + PRApprovedBy.login + ", ";
                     }        
                 } 
+            }
+            if (review.state == github:PR_REVIEW_COMMENTED || review.state == github:PR_REVIEW_CHANGES_REQUESTED) {
+                PRReviewCount = PRReviewCount + 1;
             }
         }
     }
@@ -353,7 +363,7 @@ function getMembersApprovedPR(github:PullRequest pullRequest, map<string> teamMe
     if(indexOfLastComma is int) {
         membersApprovedPR = membersApprovedPR.substring(0,indexOfLastComma);
     }
-    return membersApprovedPR;
+    return [membersApprovedPR,PRReviewCount];
 }
 
 //first tab in the worksheet will contain the repository list
