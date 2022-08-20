@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "hasithah": {
+    "choreoem": {
       "type": "object",
       "properties": {
         "pr_analyser": {
@@ -10,11 +10,11 @@
           "properties": {
             "repositoriesToScan": {
               "type": "string",
-              "description": "if you have more than one, specify comma separated"
+              "description": "If you have more than one, specify comma separated. If not specified, it will look for information at Repositories tab of specified Google Sheet."
             },
             "dateRange": {
               "type": "string",
-              "description": "Specify the date range in format YYYY-MM-DD:YYYY-MM-DD (start date: end date)"
+              "description": "Specify the date range in format YYYY-MM-DD:YYYY-MM-DD (start date: end date). If not provided date range will be constructed for the previous month."
             },
             "gitHubOAuthConfig": {
               "type": "object",
@@ -53,14 +53,12 @@
                 "refreshToken",
                 "spreadSheetID"
               ],
-              "name": "hasithah/pr_analyser:0.1.0:GSheetConfig",
+              "name": "choreoem/pr_analyser:0.1.0:GSheetConfig",
               "description": ""
             }
           },
           "additionalProperties": false,
           "required": [
-            "repositoriesToScan",
-            "dateRange",
             "gitHubOAuthConfig",
             "gSheetConfig"
           ]
