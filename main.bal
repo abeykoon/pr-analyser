@@ -7,7 +7,7 @@ import ballerina/log;
 
 @display {
     label: "RepositoriesToScan",
-    description: "If you have more than one, specify comma separated. If not specified, it will look for information at Repositories tab of specified GSheet."
+    description: "If you have more than one, specify comma separated. If not specified, it will look for information at Repositories tab of specified Google Sheet."
 }
 configurable string repositoriesToScan = "";
 
