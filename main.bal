@@ -69,6 +69,7 @@ const string sheetNameOfRepositories = "Repositories";
 const string columnContainingRepositories = "A";
 const string sheetNameOfTeamMembers = "Members";
 const string rangeForTeamMemberInfo = "A2:B200";
+const string gridLimitExceedErrorMsg = "exceeds grid limits";
 
 
 public function main() returns error? {
@@ -196,7 +197,18 @@ function appendToGSheet(WorkSheetContext workSheetContext, (string|int)[][] gShe
             a1Notation: a1Notation,
             values: gSheetData
         };
-        _ = check spreadsheetClient->setRange(workSheetContext.spreadSheetId, workSheetContext.worksheetName, data);
+        error? result = trap spreadsheetClient->setRange(workSheetContext.spreadSheetId, workSheetContext.worksheetName, data);
+        if result is error {    //in case max number of rows is hit, try to add more rows and retry
+            if result.message().includes(gridLimitExceedErrorMsg) {
+                int addRowsAfter = workSheetContext.lastRowNumberWithData - 1;
+                log:printWarn("Max number of rows in the worksheet tab " + workSheetContext.worksheetName 
+                    + " is reached. Trying to add 1000 more rows after index " + addRowsAfter.toString());
+                _ = check spreadsheetClient->addRowsAfterBySheetName(workSheetContext.spreadSheetId, workSheetContext.worksheetName, addRowsAfter, 1000);
+                _ = check spreadsheetClient->setRange(workSheetContext.spreadSheetId, workSheetContext.worksheetName, data);
+            } else {
+                return result;  //if some other error, return it as it is
+            }
+        }
         updateWorkSheetContext(workSheetContext, gSheetData);
     }
 }
