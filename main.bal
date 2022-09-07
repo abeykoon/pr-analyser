@@ -35,7 +35,11 @@ type WorkSheetContext record {
     string endingColumnInDataRange;
 };
 
-
+enum GithubPRQueryStatus {
+    PR_CREATED = "created",
+    PR_MERGED = "merged",
+    PR_CLOSED = "closed"
+}
 
 github:Client githubClient = check new ({
     auth: {
@@ -181,12 +185,12 @@ function populatePRInfoToGSheetData(github:PullRequest[] pullRequests, string re
     return gSheetData;
 }
 
-function constructGithubQuery(string repositoryName, boolean isClosed, string startDate, string endDate) returns string {
+function constructGithubQuery(string repositoryName, boolean isClosed, string startDate, string endDate, GithubPRQueryStatus statusToQuery) returns string {
     //repo:module-ballerinax-github is:pr is:closed author:sachinira created:>2022-07-15 
     string queryRepo = string `repo:${repositoryName}`;
     string queryElementType = "is:pr";
     string queryElementState = isClosed == true ? "is:closed" : "is:open";
-    string queryDateRange = string `created:${startDate}..${endDate}`;
+    string queryDateRange = string `${statusToQuery}:${startDate}..${endDate}`;
     return queryRepo + " " + queryElementType + " " + queryElementState + " " + queryDateRange;
 }
 
@@ -294,12 +298,33 @@ function getCommaSeparatedReferencedIssues(github:PullRequest pullRequest) retur
 }
 
 function getClosedPRs(github:Client githubClient, string repositoryName, string startDate, string endDate) returns github:PullRequest[]|error {
-    string query = constructGithubQuery(repositoryName, true, startDate, endDate);
-    return extractPRInfo(githubClient, repositoryName, query);
+    map<github:PullRequest> uniquePullRequests = {};  
+    check getClosedPRsByQueryStatus(githubClient, repositoryName, startDate, endDate, PR_CREATED, uniquePullRequests);
+    check getClosedPRsByQueryStatus(githubClient, repositoryName, startDate, endDate, PR_MERGED, uniquePullRequests);
+    //check getClosedPRsByQueryStatus(githubClient, repositoryName, startDate, endDate, PR_CLOSED, uniquePullRequests); //DO we need?
+    return uniquePullRequests.toArray();
+}
+
+function getClosedPRsByQueryStatus(github:Client githubClient, string repositoryName, string startDate, string endDate, 
+            GithubPRQueryStatus queryStatus, map<github:PullRequest> uniquePullRequests) returns error? {
+    string query = constructGithubQuery(repositoryName, true, startDate, endDate, queryStatus);
+    github:PullRequest[] pullRequests = check extractPRInfo(githubClient, repositoryName, query);
+    addUniquePRs(pullRequests, uniquePullRequests);
+}
+
+function addUniquePRs( github:PullRequest[] pullRequests, map<github:PullRequest> uniquePRs) {
+    foreach github:PullRequest PR in pullRequests {
+        github:PullRequest? existingPR = uniquePRs[PR.id];
+        if existingPR is github:PullRequest {
+            continue;
+        } else {
+            uniquePRs[PR.id] = PR;
+        }
+    }
 }
 
 function getOpenPRs(github:Client githubClient, string repositoryName, string startDate, string endDate) returns github:PullRequest[]|error {
-    string query = constructGithubQuery(repositoryName, false, startDate, endDate);
+    string query = constructGithubQuery(repositoryName, false, startDate, endDate, PR_CREATED);     //TODO: check if we should include all open PRs
     return extractPRInfo(githubClient, repositoryName, query);
 }
 
